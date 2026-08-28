@@ -1,17 +1,29 @@
-name: Sincronizar dashboard com Google Sheets (teste)
+name: Sincronizar e publicar dashboard
 
 on:
   schedule:
     - cron: "*/15 * * * *"
-  workflow_dispatch: {}
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+
+concurrency:
+  group: github-pages
+  cancel-in-progress: true
 
 jobs:
   sync:
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
+
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+
     steps:
-      - name: Checkout do repositório
+      - name: Baixar repositório
         uses: actions/checkout@v4
 
       - name: Configurar Python
@@ -30,11 +42,29 @@ jobs:
           GOOGLE_WORKSHEET_NAME: ${{ secrets.GOOGLE_WORKSHEET_NAME }}
         run: python sync_dashboard_google.py
 
-      - name: Commit e push se houve mudança
+      - name: Salvar atualização no repositório
         if: steps.sync.outputs.changed == 'true'
         run: |
           git config user.name "dashboard-bot"
           git config user.email "dashboard-bot@users.noreply.github.com"
           git add dashboard_v10.html
-          git commit -m "Atualização automática dos dados de equipamentos (teste)"
+          git commit -m "Atualização automática dos dados de equipamentos"
           git push
+
+      - name: Preparar site público
+        run: |
+          mkdir -p _site
+          cp dashboard_v10.html _site/index.html
+          touch _site/.nojekyll
+
+      - name: Configurar GitHub Pages
+        uses: actions/configure-pages@v5
+
+      - name: Enviar arquivos do site
+        uses: actions/upload-pages-artifact@v4
+        with:
+          path: _site
+
+      - name: Publicar dashboard
+        id: deployment
+        uses: actions/deploy-pages@v4
