@@ -1,10 +1,14 @@
 import json
 import os
+import random
 import re
+import time
 from pathlib import Path
 
 import gspread
+from gspread.exceptions import APIError
 from google.oauth2.service_account import Credentials
+from requests.exceptions import RequestException
 
 
 SHEET_ID = os.environ["GOOGLE_SHEET_ID"]
@@ -17,6 +21,10 @@ HTML_PATH = Path("dashboard_v10.html")
 SCOPES = [
     "https://www.googleapis.com/auth/spreadsheets.readonly"
 ]
+
+RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 504}
+MAX_RETRIES = 5
+MAX_RETRY_DELAY_SECONDS = 32
 
 COLUMN_MAP = {
     "Seq.": "seq",
@@ -53,10 +61,48 @@ def get_client():
     return gspread.authorize(credentials)
 
 
+def read_sheet_with_retry(client):
+    """Lê a planilha e repete apenas falhas temporárias da API."""
+    for retry_number in range(MAX_RETRIES + 1):
+        try:
+            worksheet = client.open_by_key(SHEET_ID).worksheet(
+                WORKSHEET_NAME
+            )
+            return worksheet.get_all_values()
+        except APIError as error:
+            response = getattr(error, "response", None)
+            status_code = getattr(response, "status_code", None)
+
+            if (
+                status_code not in RETRYABLE_STATUS_CODES
+                or retry_number == MAX_RETRIES
+            ):
+                raise
+
+            reason = f"Google Sheets respondeu com HTTP {status_code}"
+        except RequestException as error:
+            if retry_number == MAX_RETRIES:
+                raise
+
+            reason = f"falha temporária de rede: {error}"
+
+        delay = min(
+            2 ** (retry_number + 1),
+            MAX_RETRY_DELAY_SECONDS,
+        ) + random.uniform(0, 1)
+
+        print(
+            f"Tentativa {retry_number + 1} falhou por {reason}. "
+            f"Nova tentativa em {delay:.1f} segundos."
+        )
+        time.sleep(delay)
+
+    raise RuntimeError("A leitura da planilha falhou após as tentativas.")
+
+
 def sheet_to_records(client):
     """Lê a planilha e converte as linhas para o formato do dashboard."""
-    worksheet = client.open_by_key(SHEET_ID).worksheet(WORKSHEET_NAME)
-    rows = worksheet.get_all_values()
+    rows = read_sheet_with_retry(client)
 
     if not rows:
         raise RuntimeError("A planilha está vazia.")
@@ -155,3 +201,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
